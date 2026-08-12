@@ -7,6 +7,7 @@
 (function () {
   const tree = document.getElementById("libraryTree");
   const refreshBtn = document.getElementById("libraryRefresh");
+  const AUTO_WATCHED_SECONDS = 120;
 
   let locations = [];
 
@@ -134,6 +135,10 @@
       summary.textContent = `${details.total_episodes} ${t("library.episodes", "ep")} | ${formatSize(details.total_size)}`;
     }
 
+    const watchedSet = new Set(
+      (details.watched || []).map(([season, episode]) => `${season}:${episode}`)
+    );
+
     const seasonKeys = Object.keys(details.seasons).sort((a, b) => Number(a) - Number(b));
     if (!seasonKeys.length) {
       container.innerHTML = message(t("library.no_titles", "This folder is empty."));
@@ -150,12 +155,16 @@
           .map((episode) => {
             const playable = episode.is_video !== false && episode.path;
             const playUrl = playable ? fileUrl(location, folder, episode.path) : "";
+            const isWatched = watchedSet.has(`${key}:${episode.episode}`);
             return `
             <div class="library-episode" data-episode="${episode.episode}"
-                 data-playable="${playable ? "1" : "0"}" data-play="${esc(playUrl)}">
+                 data-playable="${playable ? "1" : "0"}" data-play="${esc(playUrl)}"
+                 data-watched="${isWatched ? "1" : "0"}">
               <span class="library-ep-num">E${String(episode.episode).padStart(3, "0")}</span>
               <span class="library-ep-file" title="${esc(episode.file)}">${esc(episode.file)}</span>
               <span class="library-ep-size">${formatSize(episode.size)}</span>
+              <button class="icon-btn library-watched-toggle" data-toggle-watched
+                      title="${t("library.toggle_watched", "Toggle watched")}">${isWatched ? "\u2713" : "\u25CB"}</button>
               <button class="icon-btn" data-delete="episode" title="${t("common.delete", "Delete")}">&times;</button>
             </div>
             <div class="library-video-player"></div>`;
@@ -184,7 +193,13 @@
   const LOADERS = { location: loadTitles, title: loadTitle };
 
   tree.addEventListener("click", async (event) => {
-    if (event.target.closest("[data-delete]") || event.target.closest("[data-play]")) return;
+    if (
+      event.target.closest("[data-delete]") ||
+      event.target.closest("[data-play]") ||
+      event.target.closest("[data-toggle-watched]")
+    ) {
+      return;
+    }
 
     const row = event.target.closest("[data-toggle]");
     if (!row) return;
@@ -206,7 +221,43 @@
     arrow.classList.toggle("expanded", expanding);
   });
 
-  /* ===== Inline player =====
+  /* ===== Watched toggle (shared by the button and auto-mark below) ===== */
+  async function setEpisodeWatched(epNode, watched) {
+    const seasonNode = epNode.closest("[data-season]");
+    const titleNode = epNode.closest("[data-folder]");
+    const locationNode = epNode.closest("[data-location]");
+    const location = locations[Number(locationNode.dataset.location)];
+
+    await apiSend("/api/library/watched", "POST", {
+      folder: titleNode.dataset.folder,
+      season: seasonNode.dataset.season,
+      episode: Number(epNode.dataset.episode),
+      watched,
+      custom_path_id: location.custom_path_id,
+      lang_folder: location.lang_folder
+    });
+
+    epNode.dataset.watched = watched ? "1" : "0";
+    const btn = epNode.querySelector("[data-toggle-watched]");
+    if (btn) btn.textContent = watched ? "\u2713" : "\u25CB";
+  }
+
+  tree.addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-toggle-watched]");
+    if (!btn) return;
+    event.stopPropagation();
+
+    const epNode = btn.closest("[data-episode]");
+    const nextWatched = epNode.dataset.watched !== "1";
+
+    try {
+      await setEpisodeWatched(epNode, nextWatched);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  /* ===== Inline player, with auto-mark-as-watched =====
    * Fullscreen is only requested through the standard Fullscreen API, which
    * covers desktop browsers. Where it is unavailable (notably iOS Safari for
    * <video>) the element is simply left to play inline with its native
@@ -221,9 +272,6 @@
       video.requestPictureInPicture().catch(() => {});
     });
 
-    // Leaving PiP closes the player rather than restoring it inline: once the
-    // floating window is dismissed the row it belonged to may be long gone
-    // from view, and reopening it is one click away.
     video.addEventListener("enterpictureinpicture", () => {
       container.style.display = "none";
     });
@@ -233,10 +281,23 @@
     });
   }
 
+  function attachAutoWatched(video, epNode) {
+    if (epNode.dataset.watched === "1") return;
+    let marked = false;
+    video.addEventListener("timeupdate", () => {
+      if (marked || epNode.dataset.watched === "1") return;
+      if (video.currentTime < AUTO_WATCHED_SECONDS) return;
+      marked = true;
+      setEpisodeWatched(epNode, true).catch(() => {
+        marked = false;
+      });
+    });
+  }
+
   tree.addEventListener("click", (event) => {
     const row = event.target.closest("[data-playable='1']");
     if (!row) return;
-    if (event.target.closest("[data-delete]")) return;
+    if (event.target.closest("[data-delete]") || event.target.closest("[data-toggle-watched]")) return;
 
     const url = row.dataset.play;
     const container = row.nextElementSibling;
@@ -262,6 +323,7 @@
 
     const video = container.querySelector("video");
     attachAutoPip(video, container);
+    attachAutoWatched(video, row);
     if (video.requestFullscreen) {
       video.requestFullscreen().catch(() => {});
     }

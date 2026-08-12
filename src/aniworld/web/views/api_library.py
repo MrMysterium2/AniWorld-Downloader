@@ -3,7 +3,7 @@
 from flask import abort, jsonify, request, send_from_directory
 
 from ...logger import get_logger
-from .. import library
+from .. import db, library
 from ..settings_store import library_enabled
 
 logger = get_logger(__name__)
@@ -14,6 +14,7 @@ def register(bp):
     bp.add_url_rule("/library/titles", view_func=library_titles)
     bp.add_url_rule("/library/title", view_func=library_title)
     bp.add_url_rule("/library/file", view_func=library_file)
+    bp.add_url_rule("/library/watched", view_func=set_watched_route, methods=["POST"])
     bp.add_url_rule("/library/delete", view_func=delete_library_item, methods=["POST"])
 
 
@@ -49,9 +50,29 @@ def library_title():
     if not folder:
         return jsonify({"error": "folder is required"}), 400
     try:
-        return jsonify(library.read_title(folder, path_id, lang_folder))
+        data = library.read_title(folder, path_id, lang_folder)
     except library.LibraryError as exc:
         return jsonify({"error": str(exc)}), 400
+    data["watched"] = db.watched_for_title(folder, path_id, lang_folder)
+    return jsonify(data)
+
+
+def set_watched_route():
+    _guard()
+    data = request.get_json(silent=True) or {}
+    folder = data.get("folder", "")
+    season, episode = data.get("season"), data.get("episode")
+    if not folder or season is None or episode is None:
+        return jsonify({"error": "folder, season and episode are required"}), 400
+    db.set_watched(
+        folder,
+        season,
+        int(episode),
+        bool(data.get("watched", True)),
+        custom_path_id=data.get("custom_path_id"),
+        lang_folder=data.get("lang_folder"),
+    )
+    return jsonify({"ok": True})
 
 
 def library_file():
