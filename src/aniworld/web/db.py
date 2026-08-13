@@ -185,6 +185,18 @@ _SCHEMA = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_api_key_hash ON api_keys (key_hash)",
+    """
+    CREATE TABLE IF NOT EXISTS watched_episodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        folder TEXT NOT NULL,
+        season TEXT NOT NULL,
+        episode INTEGER NOT NULL,
+        custom_path_id INTEGER,
+        lang_folder TEXT,
+        watched_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(folder, season, episode, custom_path_id, lang_folder)
+    )
+    """,
 )
 
 # Columns added after the first release. Older databases get them via ALTER.
@@ -909,6 +921,51 @@ def touch_api_key(key_id):
             "(last_used_at IS NULL OR last_used_at < datetime('now', '-60 seconds'))",
             (key_id,),
         )
+
+
+# ---------------------------------------------------------------------------
+# Watched episodes (library view)
+# ---------------------------------------------------------------------------
+def set_watched(
+    folder, season, episode, watched, custom_path_id=None, lang_folder=None
+):
+    """Mark or unmark one episode.
+
+    The UNIQUE constraint on watched_episodes cannot be relied on for
+    dedupe here: sqlite treats NULL columns as distinct from one another in a
+    UNIQUE index, and custom_path_id/lang_folder are NULL for the common case
+    of the default download path with no language separation. An explicit
+    existence check does the job the constraint cannot.
+    """
+    season = str(season)
+    episode = int(episode)
+    with session() as conn:
+        existing = conn.execute(
+            "SELECT id FROM watched_episodes WHERE folder = ? AND season = ? "
+            "AND episode = ? AND custom_path_id IS ? AND lang_folder IS ?",
+            (folder, season, episode, custom_path_id, lang_folder),
+        ).fetchone()
+
+        if watched and not existing:
+            conn.execute(
+                "INSERT INTO watched_episodes "
+                "(folder, season, episode, custom_path_id, lang_folder) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (folder, season, episode, custom_path_id, lang_folder),
+            )
+        elif not watched and existing:
+            conn.execute("DELETE FROM watched_episodes WHERE id = ?", (existing["id"],))
+
+
+def watched_for_title(folder, custom_path_id=None, lang_folder=None):
+    """(season, episode) pairs marked watched for one title."""
+    with session() as conn:
+        rows = conn.execute(
+            "SELECT season, episode FROM watched_episodes WHERE folder = ? "
+            "AND custom_path_id IS ? AND lang_folder IS ?",
+            (folder, custom_path_id, lang_folder),
+        ).fetchall()
+    return [[r["season"], r["episode"]] for r in rows]
 
 
 def delete_api_key(key_id):

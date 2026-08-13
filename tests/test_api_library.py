@@ -357,3 +357,68 @@ def test_the_file_route_closes_when_the_library_is_off(
         "/api/library/file?folder=Naruto&path=Season 1/Naruto S01E001.mkv"
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Watched toggle
+# ---------------------------------------------------------------------------
+def test_marking_an_episode_watched_via_the_api(client, episode_file):
+    episode_file("Naruto", 1, 1)
+    response = client.post(
+        "/api/library/watched",
+        json={"folder": "Naruto", "season": "1", "episode": 1, "watched": True},
+    )
+    assert response.status_code == 200
+
+    body = client.get("/api/library/title?folder=Naruto").get_json()
+    assert body["watched"] == [["1", 1]]
+
+
+def test_unmarking_an_episode_via_the_api(client, episode_file):
+    episode_file("Naruto", 1, 1)
+    client.post(
+        "/api/library/watched",
+        json={"folder": "Naruto", "season": "1", "episode": 1, "watched": True},
+    )
+    response = client.post(
+        "/api/library/watched",
+        json={"folder": "Naruto", "season": "1", "episode": 1, "watched": False},
+    )
+    assert response.status_code == 200
+
+    body = client.get("/api/library/title?folder=Naruto").get_json()
+    assert body["watched"] == []
+
+
+def test_watched_defaults_to_true_when_omitted(client, episode_file):
+    episode_file("Naruto", 1, 1)
+    client.post(
+        "/api/library/watched", json={"folder": "Naruto", "season": "1", "episode": 1}
+    )
+    body = client.get("/api/library/title?folder=Naruto").get_json()
+    assert body["watched"] == [["1", 1]]
+
+
+def test_watched_toggle_needs_a_folder(client):
+    response = client.post("/api/library/watched", json={"season": "1", "episode": 1})
+    assert response.status_code == 400
+
+
+def test_watched_toggle_needs_a_season(client):
+    response = client.post(
+        "/api/library/watched", json={"folder": "Naruto", "episode": 1}
+    )
+    assert response.status_code == 400
+
+
+def test_watched_toggle_needs_an_episode(client):
+    response = client.post(
+        "/api/library/watched", json={"folder": "Naruto", "season": "1"}
+    )
+    assert response.status_code == 400
+
+
+def test_a_title_with_no_watched_episodes_returns_an_empty_list(client, episode_file):
+    episode_file("Naruto", 1, 1)
+    body = client.get("/api/library/title?folder=Naruto").get_json()
+    assert body["watched"] == []
