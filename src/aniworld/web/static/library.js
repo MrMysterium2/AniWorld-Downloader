@@ -1,7 +1,6 @@
 /* Library tree.
  *
- * Three levels, each fetched only when it is opened:
- *   location -> title folders -> seasons/episodes of one title
+ * location -> series/movies -> title folders -> seasons/episodes of one title
  */
 
 (function () {
@@ -35,6 +34,12 @@
     return `/api/library/file?${params.toString()}`;
   }
 
+  function seasonLabel(key) {
+    return key === "movie"
+      ? t("library.movies", "Movies")
+      : `${t("index.season", "Season")} ${esc(key)}`;
+  }
+
   /* ===== Level 1: locations ===== */
   async function load() {
     tree.innerHTML = message(t("common.loading", "Loading..."));
@@ -64,33 +69,14 @@
               <span class="library-sub">${esc(location.path)}</span>
             </div>
           </div>
-          <div class="library-children" data-level="titles"></div>
+          <div class="library-children" data-level="types"></div>
         </div>`
       )
       .join("");
   }
 
-  /* ===== Level 2: title folders ===== */
-  async function loadTitles(node) {
-    const location = locations[Number(node.dataset.location)];
-    const container = node.querySelector('[data-level="titles"]');
-    container.innerHTML = message(t("common.loading", "Loading..."));
-
-    let titles = [];
-    try {
-      const data = await apiFetch(`/api/library/titles?${locationQuery(location)}`);
-      titles = data.titles || [];
-    } catch (error) {
-      container.innerHTML = message(t("common.failed", "Failed"));
-      return;
-    }
-
-    if (!titles.length) {
-      container.innerHTML = message(t("library.no_titles", "This folder is empty."));
-      return;
-    }
-
-    container.innerHTML = titles
+  function renderTitles(titles) {
+    return titles
       .map(
         (folder) => `
         <div class="library-node" data-folder="${esc(folder)}">
@@ -110,7 +96,58 @@
       .join("");
   }
 
-  /* ===== Level 3: seasons and episodes of one title ===== */
+  /* ===== Level 2: series / movies ===== */
+  async function loadTypes(node) {
+    const location = locations[Number(node.dataset.location)];
+    const container = node.querySelector('[data-level="types"]');
+    container.innerHTML = message(t("common.loading", "Loading..."));
+
+    let titles = [];
+    try {
+      const data = await apiFetch(`/api/library/titles?${locationQuery(location)}`);
+      titles = data.titles || [];
+    } catch (error) {
+      container.innerHTML = message(t("common.failed", "Failed"));
+      return;
+    }
+
+    if (!titles.length) {
+      container.innerHTML = message(t("library.no_titles", "This folder is empty."));
+      return;
+    }
+
+    const series = titles
+      .filter((entry) => (entry.categories || []).includes("series"))
+      .map((entry) => entry.folder);
+    const movies = titles
+      .filter((entry) => (entry.categories || []).includes("movies"))
+      .map((entry) => entry.folder);
+
+    const sections = [
+      { key: "series", label: t("library.series", "Series"), titles: series },
+      { key: "movies", label: t("library.movies", "Movies"), titles: movies }
+    ].filter((section) => section.titles.length);
+
+    container.innerHTML = sections
+      .map(
+        (section) => `
+        <div class="library-node" data-type="${esc(section.key)}">
+          <div class="library-row" data-toggle="type">
+            <div class="library-row-left">
+              <span class="arrow">&#9654;</span>
+              <span class="library-name">${esc(section.label)}</span>
+            </div>
+            <div class="library-row-right">
+              <span class="library-sub">${section.titles.length}</span>
+            </div>
+          </div>
+          <div class="library-children" data-level="titles">${renderTitles(section.titles)}</div>
+        </div>`
+      )
+      .join("");
+  }
+
+  /* ===== Level 3: seasons, episodes and movies of one title ===== */
   async function loadTitle(node) {
     const locationNode = node.closest("[data-location]");
     const location = locations[Number(locationNode.dataset.location)];
@@ -139,7 +176,11 @@
       (details.watched || []).map(([season, episode]) => `${season}:${episode}`)
     );
 
-    const seasonKeys = Object.keys(details.seasons).sort((a, b) => Number(a) - Number(b));
+    const seasonKeys = Object.keys(details.seasons).sort((a, b) => {
+      if (a === "movie") return 1;
+      if (b === "movie") return -1;
+      return Number(a) - Number(b);
+    });
     if (!seasonKeys.length) {
       container.innerHTML = message(t("library.no_titles", "This folder is empty."));
       return;
@@ -156,10 +197,14 @@
             const playable = episode.is_video !== false && episode.path;
             const playUrl = playable ? fileUrl(location, folder, episode.path) : "";
             const isWatched = watchedSet.has(`${key}:${episode.episode}`);
+            const playIcon = playable
+              ? `<span class="library-ep-play" title="${t("library.play", "Play")}">&#9654;</span>`
+              : "";
             return `
             <div class="library-episode" data-episode="${episode.episode}"
                  data-playable="${playable ? "1" : "0"}" data-play="${esc(playUrl)}"
                  data-watched="${isWatched ? "1" : "0"}">
+              ${playIcon}
               <span class="library-ep-num">E${String(episode.episode).padStart(3, "0")}</span>
               <span class="library-ep-file" title="${esc(episode.file)}">${esc(episode.file)}</span>
               <span class="library-ep-size">${formatSize(episode.size)}</span>
@@ -176,7 +221,7 @@
             <div class="library-row" data-toggle="season">
               <div class="library-row-left">
                 <span class="arrow">&#9654;</span>
-                <span class="library-name">${t("index.season", "Season")} ${esc(key)}</span>
+                <span class="library-name">${seasonLabel(key)}</span>
               </div>
               <div class="library-row-right">
                 <span class="library-sub">${count} ${t("library.episodes", "ep")} | ${formatSize(size)}</span>
@@ -190,7 +235,7 @@
   }
 
   /* ===== Expanding ===== */
-  const LOADERS = { location: loadTitles, title: loadTitle };
+  const LOADERS = { location: loadTypes, title: loadTitle };
 
   tree.addEventListener("click", async (event) => {
     if (
@@ -208,6 +253,12 @@
     const children = row.nextElementSibling;
     const arrow = row.querySelector(".arrow");
     const expanding = !children.classList.contains("expanded");
+
+    if (row.dataset.toggle === "type") {
+      children.classList.toggle("expanded", expanding);
+      arrow.classList.toggle("expanded", expanding);
+      return;
+    }
 
     if (expanding && !node.dataset.loaded) {
       const loader = LOADERS[row.dataset.toggle];
@@ -338,6 +389,11 @@
     }
     if (kind === "season") {
       const season = node.closest("[data-season]").dataset.season;
+      if (season === "movie") {
+        return t("library.confirm_movies", 'Really delete all movies of "{name}"?', {
+          name
+        });
+      }
       return t("library.confirm_season", 'Really delete season {season} of "{name}"?', {
         season,
         name
@@ -364,7 +420,8 @@
       lang_folder: location.lang_folder
     };
     if (kind !== "title") {
-      payload.season = Number(button.closest("[data-season]").dataset.season);
+      const season = button.closest("[data-season]").dataset.season;
+      payload.season = season === "movie" ? season : Number(season);
     }
     if (kind === "episode") {
       payload.episode = Number(button.closest("[data-episode]").dataset.episode);
